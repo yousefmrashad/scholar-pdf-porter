@@ -7,6 +7,9 @@ It applies all necessary compatibility modifications (manifest adjustments, scri
 > [!NOTE]
 > **AI Development & Disclaimer:** This project was developed with the assistance of agentic AI coding assistants. Since the code modifications are applied programmatically using regex and heuristics, changes in future upstream extension releases might cause unexpected side effects. Users should use this utility at their own discretion.
 
+> [!WARNING]
+> **Tested Version:** This patcher has only been tested against **Google Scholar PDF Reader v0.5.2**. Since the patching engine operates on minified/compiled JavaScript using regex pattern matching, newer versions with recompiled code may cause patches to fail silently or produce a broken extension. The patcher will print `WARNING:` messages for any patterns it cannot find.
+
 ## Prerequisites
 
 - Python 3.8+
