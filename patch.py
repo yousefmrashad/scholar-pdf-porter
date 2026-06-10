@@ -389,7 +389,7 @@ def patch_manifest(manifest_path: Path):
     # 2. Add Gecko Specific Settings
     manifest["browser_specific_settings"] = {
         "gecko": {
-            "id": "scholar-pdf-port-yousef@yousef.me",
+            "id": "scholar-pdf-reader-port@addon",
             "strict_min_version": "109.0",
             "data_collection_permissions": {
                 "required": ["none"]
