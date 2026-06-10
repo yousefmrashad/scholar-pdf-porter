@@ -1,0 +1,15 @@
+# Build artifacts
+dist/
+dist.zip
+build_tmp/
+lint.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# UV / Virtual Environment
+.venv/
+.uv/
+.python-version
