@@ -508,6 +508,36 @@ def patch_reader_html(reader_html_path: Path):
         f.write(html)
     print("[+] reader.html patched successfully!")
 
+def deminify_js_files(target_dir: Path):
+    print(f"[*] Deminifying and formatting JavaScript files...")
+    try:
+        import jsbeautifier
+    except ImportError:
+        try:
+            import subprocess
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "jsbeautifier"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            import jsbeautifier
+        except Exception:
+            jsbeautifier = None
+
+    if jsbeautifier:
+        opts = jsbeautifier.default_options()
+        opts.indent_size = 2
+        opts.keep_array_indentation = True
+        opts.break_chained_methods = False
+
+        for js_file in target_dir.glob("*.js"):
+            try:
+                raw = js_file.read_text(encoding="utf-8", errors="ignore")
+                formatted = jsbeautifier.beautify(raw, opts)
+                js_file.write_text(formatted, encoding="utf-8")
+            except Exception as e:
+                print(f"    - Warning: Failed to beautify {js_file.name}: {e}")
+        print("[+] JavaScript files deminified and formatted successfully.")
+    else:
+        print("    - Notice: jsbeautifier not found. Proceeding with raw extracted JavaScript.")
+
+
 def patch_background_js(bg_js_path: Path):
     print(f"[*] Patching background-compiled.js...")
     with open(bg_js_path, "r", encoding="utf-8") as f:
@@ -524,21 +554,12 @@ def patch_background_js(bg_js_path: Path):
 
     # 2. Add chrome-extension / moz-extension initiator startsWith support in headers interceptor
     # Search for: (a.initiator||"").startsWith("chrome-extension://")
-    target_initiator = '(a.initiator||"").startsWith("chrome-extension://")'
-    if target_initiator in content:
-        content = content.replace(
-            target_initiator,
-            '((a.initiator||"").startsWith("chrome-extension://")||(a.initiator||"").startsWith("moz-extension://"))'
-        )
-        print("    - Initiator scheme checks patched.")
-    else:
-        # regex fallback
-        content, count = re.subn(
-            r'([a-zA-Z0-9_$]+)\.initiator\|\|""\)\.startsWith\(\s*["\']chrome-extension://["\']\s*\)',
-            r'(\1.initiator||"").startsWith("chrome-extension://")||(\1.initiator||"").startsWith("moz-extension://")',
-            content
-        )
-        print(f"    - Initiator scheme checks (regex) patched: {count}")
+    content, count = re.subn(
+        r'([a-zA-Z0-9_$]+)\.initiator\s*\|\|\s*["\']["\']\s*\)\s*\.startsWith\(\s*["\']chrome-extension://["\']\s*\)',
+        r'(\1.initiator||"").startsWith("chrome-extension://")||(\1.initiator||"").startsWith("moz-extension://")',
+        content
+    )
+    print(f"    - Initiator scheme checks patched: {count}")
 
     # 3. Extract the name of the 'Y' tab storage helper function
     y_match = re.search(
@@ -549,17 +570,18 @@ def patch_background_js(bg_js_path: Path):
     print(f"    - Found tab cache function name: '{y_func_name}'")
 
     # 4. Inject bypassedTabs declaration globally at the start of the script wrapper
-    content = content.replace('(function(){', '(function(){var bypassedTabs = new Set();', 1)
+    content = re.sub(r'\(function\s*\(\s*\)\s*\{', '(function(){var bypassedTabs = new Set();', content, count=1)
     print("    - bypassedTabs cache Set injected globally.")
 
     # 5. Fix onBeforeSendHeaders listener signature compatibility for Firefox
-    # Replace: },{urls:["<all_urls>"]},["requestHeaders","extraHeaders"]);
-    # with: },{urls:["<all_urls>"]},typeof browser !== "undefined" ? ["requestHeaders"] : ["requestHeaders","extraHeaders"]);
-    content = content.replace(
-        '},{urls:["<all_urls>"]},["requestHeaders","extraHeaders"]);',
-        '},{urls:["<all_urls>"]},typeof browser !== "undefined" ? ["requestHeaders"] : ["requestHeaders","extraHeaders"]);'
+    obs_pattern = r'\}\s*,\s*\{\s*urls\s*:\s*\[\s*["\']<all_urls>["\']\s*\]\s*\}\s*,\s*\[\s*["\']requestHeaders["\']\s*,\s*["\']extraHeaders["\']\s*\]\s*\)\s*;'
+    content, obs_count = re.subn(
+        obs_pattern,
+        '}, {urls: ["<all_urls>"]}, typeof browser !== "undefined" ? ["requestHeaders"] : ["requestHeaders", "extraHeaders"]);',
+        content,
+        count=1
     )
-    print("    - onBeforeSendHeaders listener signature updated.")
+    print(f"    - onBeforeSendHeaders listener signature updated: {obs_count} replacements.")
 
     # 6. Inject the google.com header strip blocking listener for Firefox
     firefox_header_listener = """if (typeof browser !== "undefined") {
@@ -593,13 +615,20 @@ def patch_background_js(bg_js_path: Path):
   );
 }"""
     # Inject it right after the onBeforeSendHeaders listener registration
-    search_pos = content.find('typeof browser !== "undefined" ? ["requestHeaders"] : ["requestHeaders","extraHeaders"]);')
+    search_pos = content.find('typeof browser !== "undefined" ? ["requestHeaders"] : ["requestHeaders", "extraHeaders"]);')
     if search_pos != -1:
-        insert_idx = search_pos + len('typeof browser !== "undefined" ? ["requestHeaders"] : ["requestHeaders","extraHeaders"]);')
+        insert_idx = search_pos + len('typeof browser !== "undefined" ? ["requestHeaders"] : ["requestHeaders", "extraHeaders"]);')
         content = content[:insert_idx] + "\n" + firefox_header_listener + content[insert_idx:]
         print("    - Firefox google.com Origin/Referer header cleaning listener injected.")
     else:
-        print("    - WARNING: Could not find onBeforeSendHeaders registration to inject Firefox header cleaner.")
+        # Fallback search without space
+        search_pos = content.find('typeof browser !== "undefined" ? ["requestHeaders"] : ["requestHeaders","extraHeaders"]);')
+        if search_pos != -1:
+            insert_idx = search_pos + len('typeof browser !== "undefined" ? ["requestHeaders"] : ["requestHeaders","extraHeaders"]);')
+            content = content[:insert_idx] + "\n" + firefox_header_listener + content[insert_idx:]
+            print("    - Firefox google.com Origin/Referer header cleaning listener injected.")
+        else:
+            print("    - WARNING: Could not find onBeforeSendHeaders registration to inject Firefox header cleaner.")
 
     # 7. Inject the onHeadersReceived redirect listener logic
     # Find: chrome.webRequest.onHeadersReceived.addListener(a=>{if(a.tabId>=0&&a.type==="main_frame"){
@@ -628,7 +657,7 @@ def patch_background_js(bg_js_path: Path):
     }
   }
 """
-    on_headers_received_pattern = r'chrome\.webRequest\.onHeadersReceived\.addListener\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{\s*if\s*\(\s*\1\.tabId\s*>=0\s*&&\s*\1\.type\s*===\s*"main_frame"\s*\)\s*\{\s*var'
+    on_headers_received_pattern = r'chrome\.webRequest\.onHeadersReceived\.addListener\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{\s*if\s*\(\s*\1\.tabId\s*>=\s*0\s*&&\s*\1\.type\s*===\s*"main_frame"\s*\)\s*\{\s*var'
     match = re.search(on_headers_received_pattern, content)
     if match:
         var_name = match.group(1)
@@ -652,7 +681,7 @@ def patch_background_js(bg_js_path: Path):
     # 9. Wrap the chrome.extension.isAllowedFileSchemeAccess and Ac(a) check block
     # Matches: function Ac(a){...} chrome.extension.isAllowedFileSchemeAccess(...)
     # and wraps it in a conditional Chromium check.
-    is_allowed_pattern = r'(function\s+([a-zA-Z0-9_$]+)\s*\([^)]*\)\s*\{\s*chrome\.windows\.getCurrent.*?chrome\.extension\.isAllowedFileSchemeAccess\(function\([^)]*\)\{.*?\.[pP][dD][fF]"\s*\}\s*\]\s*\}\)\s*\}\);?)'
+    is_allowed_pattern = r'(function\s+([a-zA-Z0-9_$]+)\s*\([^)]*\)\s*\{\s*chrome\.windows\.getCurrent.*?chrome\.extension\.isAllowedFileSchemeAccess\s*\(function\s*\([^)]*\)\s*\{.*?\.[pP][dD][fF]"\s*\}\s*\]\s*\}\s*\)\s*\}\s*\)\s*;?)'
     match_allowed = re.search(is_allowed_pattern, content, re.DOTALL)
     if match_allowed:
         full_block = match_allowed.group(1)
@@ -695,7 +724,7 @@ def patch_background_js(bg_js_path: Path):
     # 12. Bypass history recovering script injection (Fc)
     # matches function Fc(a,b,c,d){...} and returns historyscript-compiled.js execution
     # prepends: if(typeof browser!=="undefined")return Promise.resolve(!1);
-    fc_pattern = r'function\s+([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*\)\s*\{\s*(?=.*?historyscript-compiled\.js)'
+    fc_pattern = r'function\s+([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*\)\s*\{\s*(?=[\s\S]*?historyscript-compiled\.js)'
     match_fc = re.search(fc_pattern, content)
     if match_fc:
         func_name = match_fc.group(1)
@@ -712,7 +741,7 @@ def patch_background_js(bg_js_path: Path):
     # 13. Bypass reload script injection (Gc)
     # matches async function Gc(a){...} reloading tab via executeScript with reloadscript-compiled.js
     # prepends: if(typeof browser!=="undefined")return Promise.resolve();
-    gc_pattern = r'async\s+function\s+([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*\)\s*\{\s*(?=.*?reloadscript-compiled\.js)'
+    gc_pattern = r'async\s+function\s+([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*\)\s*\{\s*(?=[\s\S]*?reloadscript-compiled\.js)'
     match_gc = re.search(gc_pattern, content)
     if match_gc:
         func_name = match_gc.group(1)
@@ -726,7 +755,7 @@ def patch_background_js(bg_js_path: Path):
     # 14. Bypass window dimension check script injection (Hc)
     # matches function Hc(a,b,c,d){... return executeScript window.innerWidth...}
     # replaces with tab.width lookup on Firefox
-    hc_pattern = r'function\s+([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*\)\s*\{\s*(?=.*?window\.innerWidth)'
+    hc_pattern = r'function\s+([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*\)\s*\{\s*(?=[\s\S]*?window\.innerWidth)'
     match_hc = re.search(hc_pattern, content)
     if match_hc:
         func_name = match_hc.group(1)
@@ -749,9 +778,6 @@ def patch_background_js(bg_js_path: Path):
         func_name = match_ic.group(1)
         arg_name = match_ic.group(2)
         regex_var = match_ic.group(3)
-        # we also need the rest of the original function's then block: .then(b=>rc.test((new URL(b[0].result+"")).host)).catch(()=>!1)
-        # So we just prepended our logic and kept the original return statement as a fallback.
-        # Let's do a direct replacement of the function body start:
         target_body = f'function {func_name}({arg_name}){{'
         replacement_body = f'function {func_name}({arg_name}){{if(typeof browser!=="undefined"){{try{{const stored={y_func_name}({arg_name},0);if(stored&&stored.hb&&stored.hb.referrer){{return Promise.resolve({regex_var}.test((new URL(stored.hb.referrer)).host))}}}}catch(e){{}}return Promise.resolve(!1)}}'
         content = content.replace(target_body, replacement_body, 1)
@@ -763,13 +789,13 @@ def patch_background_js(bg_js_path: Path):
     # matches the case "getUrl": yc(b.tab.id, b.frameId).then(...) block
     get_url_pattern = (
         r'case\s*"getUrl"\s*:\s*([a-zA-Z0-9_$]+)\(\s*([a-zA-Z0-9_$]+)\.tab\.id\s*,\s*\2\.frameId\s*\)\.then\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{\s*'
-        r'var\s+([a-zA-Z0-9_$]+)=\3\.J\s*,\s*([a-zA-Z0-9_$]+)=\3\.Ia\s*,\s*([a-zA-Z0-9_$]+)=\3\.Ja\s*,\s*([a-zA-Z0-9_$]+)=\3\.parentFrameId\s*;\s*'
-        r'\4\|\|console\.error\("[^"]+",\2\)\s*;\s*'
-        r'var\s+([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\)\s*;\s*'
-        r'([a-zA-Z0-9_$]+)\(\4,\10\)\.then\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{\s*'
-        r'var\s+([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)\(\4,\5,\10,\12\)\s*,\s*([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)\(\4,\5,\10,\12\)\s*,\s*([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)\(\10\)\s*;\s*'
+        r'var\s+([a-zA-Z0-9_$]+)\s*=\s*\3\.J\s*,\s*([a-zA-Z0-9_$]+)\s*=\s*\3\.Ia\s*,\s*([a-zA-Z0-9_$]+)\s*=\s*\3\.Ja\s*,\s*([a-zA-Z0-9_$]+)\s*=\s*\3\.parentFrameId\s*;\s*'
+        r'\4\s*\|\|\s*console\.error\("[^"]+",\s*\2\)\s*;\s*'
+        r'var\s+([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\(\s*([a-zA-Z0-9_$]+)\s*\)\s*;\s*'
+        r'([a-zA-Z0-9_$]+)\(\s*\4\s*,\s*\10\s*\)\.then\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{\s*'
+        r'var\s+([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\(\s*\4\s*,\s*\5\s*,\s*\10\s*,\s*\12\s*\)\s*,\s*([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\(\s*\4\s*,\s*\5\s*,\s*\10\s*,\s*\12\s*\)\s*,\s*([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\(\s*\10\s*\)\s*;\s*'
         r'Promise\.all\(\[\s*\13\s*,\s*\15\s*,\s*\8\s*,\s*\17\s*\]\)\.then\(\(\[\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*\]\)\s*=>\s*\{\s*'
-        r'([a-zA-Z0-9_$]+)&&([a-zA-Z0-9_$]+)\.postMessage\(\{\s*pdfUrl:\4\s*,\s*topWindowUrlBeforeRedirects:\6\|\|\5\s*,\s*isScholarTopReferrer:\21\s*,\s*isHistoryOnTopWindow:\19\s*,\s*shouldShowSignedInFeatures:\12\s*,\s*topWindowWidth:\20\.width\s*,\s*topWindowHeight:\20\.height\s*,\s*parentFrameId:\7\s*\}\)\s*\}\)\s*\}\)\s*\}\s*,\s*[a-zA-Z0-9_$]+\s*=>\s*\{\s*console\.error\([^)]*\)\s*\}\)'
+        r'([a-zA-Z0-9_$]+)\s*&&\s*([a-zA-Z0-9_$]+)\.postMessage\(\{\s*pdfUrl:\s*\4\s*,\s*topWindowUrlBeforeRedirects:\s*\6\s*\|\|\s*\5\s*,\s*isScholarTopReferrer:\s*\21\s*,\s*isHistoryOnTopWindow:\s*\19\s*,\s*shouldShowSignedInFeatures:\s*\12\s*,\s*topWindowWidth:\s*\20\.width\s*,\s*topWindowHeight:\s*\20\.height\s*,\s*parentFrameId:\s*\7\s*\}\)\s*\}\)\s*\}\)\s*\}\s*,\s*[a-zA-Z0-9_$]+\s*=>\s*\{\s*console\.error\([^)]*\)\s*\}\)'
     )
     match_get_url = re.search(get_url_pattern, content)
     if match_get_url:
@@ -993,13 +1019,23 @@ def patch_pdf_loader_js(pdf_loader_path: Path):
 
     # 2. Fix pdf.js worker constructor fetching and blobifying security restrictions
     # replaces blob loader fetch block with direct relative url assignment
-    worker_pattern = r'\(async\(\)\s*=>\s*\{\s*var\s+([a-zA-Z0-9_$]+)\s*=\s*await\s+\(\s*await\s+fetch\(\s*"/pdf\.worker\.min\.js"\s*\)\s*\)\.blob\(\)\s*;\s*pdfjsLib\.GlobalWorkerOptions\.workerSrc\s*=\s*\(0\s*,\s*URL\.createObjectURL\)\(\1\);'
+    worker_pattern = r'\(async\s*\(\)\s*=>\s*\{\s*var\s+([a-zA-Z0-9_$]+)\s*=\s*await\s+\(\s*await\s+fetch\(\s*"/pdf\.worker\.min\.js"\s*\)\s*\)\.blob\(\)\s*;\s*pdfjsLib\.GlobalWorkerOptions\.workerSrc\s*=\s*\(0\s*,\s*URL\.createObjectURL\)\s*\(\s*\1\s*\);'
     match_worker = re.search(worker_pattern, content)
     if match_worker:
         content = re.sub(worker_pattern, '(async()=>{pdfjsLib.GlobalWorkerOptions.workerSrc="/pdf.worker.min.js";', content, count=1)
         print("    - workerSrc blob loading bypassed with direct absolute URL mapping.")
     else:
         print("    - WARNING: Could not find workerSrc blob constructor to patch.")
+
+    # 3. Patch PDF download handler to delegate download task to parent frame (since sandboxed null-origin frame cannot trigger downloads in Firefox)
+    download_pattern = r'([a-zA-Z0-9_$]+)\s*=\s*async\s*function\s*\(\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*\)\s*\{\s*if\s*\(\s*typeof\s+\3\s*===\s*"string"\s*&&\s*\(\s*\2\s*=\s*await\s*\(await\s*\(await\s*\2\.([a-zA-Z0-9_$]+)\)\.promise\)\.getData\(\)\s*,\s*window\.origin\s*===\s*"null"\s*\)\s*\)\s*\{\s*var\s+[a-zA-Z0-9_$]+\s*=\s*URL\.createObjectURL[\s\S]*?250\s*\)\s*\}\s*\}'
+    match_download = re.search(download_pattern, content)
+    if match_download:
+        replacement = r'\1=async function(\2,\3){if(typeof \3==="string"&&(\2=await (await (await \2.\4).promise).getData())){window.parent.postMessage({type:"download_pdf",buffer:\2.buffer,filename:\3},"*")}}'
+        content = re.sub(download_pattern, replacement, content, count=1)
+        print("    - PDF download handler patched to use parent postMessage delegate.")
+    else:
+        print("    - WARNING: Could not find PDF download handler pattern to patch.")
 
     with open(pdf_loader_path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -1090,6 +1126,9 @@ def main():
             sys.exit(1)
 
     print("[+] Extension source extracted successfully.")
+
+    # Deminify & format all extracted JS files first
+    deminify_js_files(build_dir)
 
     # Apply patches
     patch_manifest(build_dir / "manifest.json")

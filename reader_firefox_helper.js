@@ -93,31 +93,190 @@
   }
 
   window.addEventListener("message", e => {
-    if (e.data && typeof e.data === "object" && e.data.type === "fetch") {
-      const h = e.ports[0];
-      if (h && e.source && e.source.parent === window) {
-        if (window.localPdfFile) {
-          console.log("[ScholarPDF Helper] Loading dropped local file:", window.localPdfFile.name);
-          const body = window.localPdfFile.stream();
-          h.postMessage({
-            type: "pdf",
-            body: body,
-            length: window.localPdfFile.size,
-            encoding: "",
-            filename: window.localPdfFile.name
-          }, [body]);
-          return;
-        }
-        const url = e.data.url;
-        if (typeof url === "string" && Z(url)) {
-          console.log("[ScholarPDF Helper] Fetching PDF:", url);
-          la(url, h);
-          pa(h);
+    if (e.data && typeof e.data === "object") {
+      if (e.data.type === "download_pdf") {
+        console.log("[ScholarPDF Helper] Downloading PDF from sandboxed iframe:", e.data.filename);
+        triggerDownload(e.data.buffer, e.data.filename);
+        return;
+      }
+      if (e.data.printBuffer && e.data.printBuffer instanceof ArrayBuffer) {
+        console.log("[ScholarPDF Helper] Printing PDF from printBuffer message");
+        triggerPrint(e.data.printBuffer);
+        return;
+      }
+      if (e.data.type === "fetch") {
+        const h = e.ports[0];
+        if (h && e.source && e.source.parent === window) {
+          if (window.localPdfFile) {
+            console.log("[ScholarPDF Helper] Loading dropped local file:", window.localPdfFile.name);
+            const body = window.localPdfFile.stream();
+            h.postMessage({
+              type: "pdf",
+              body: body,
+              length: window.localPdfFile.size,
+              encoding: "",
+              filename: window.localPdfFile.name
+            }, [body]);
+            return;
+          }
+          const url = e.data.url;
+          if (typeof url === "string" && Z(url)) {
+            console.log("[ScholarPDF Helper] Fetching PDF:", url);
+            la(url, h);
+            pa(h);
+          }
         }
       }
     }
   });
 })();
+
+function getDocumentFilename() {
+  const titleEl = document.querySelector(".gsr-tb-title");
+  let title = titleEl ? titleEl.textContent.trim() : "";
+  if (title) {
+    title = title.replace(/[/\\?%*:|"<>]/g, "_");
+    if (!title.toLowerCase().endsWith(".pdf")) {
+      title += ".pdf";
+    }
+    return title;
+  }
+  const urlParams = new URLSearchParams(window.location.search);
+  const fileUrl = urlParams.get("file");
+  if (fileUrl) {
+    try {
+      const parsed = new URL(fileUrl);
+      const name = decodeURIComponent(parsed.pathname.split("/").pop());
+      if (name) {
+        return name.toLowerCase().endsWith(".pdf") ? name : `${name}.pdf`;
+      }
+    } catch (e) {}
+  }
+  return "document.pdf";
+}
+
+async function triggerDownload(customBuffer = null, customFilename = "") {
+  let filename = customFilename || getDocumentFilename();
+  if (!filename.toLowerCase().endsWith(".pdf")) filename += ".pdf";
+
+  if (customBuffer) {
+    const blob = new Blob([customBuffer], { type: "application/pdf" });
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { a.remove(); URL.revokeObjectURL(blobUrl); }, 1000);
+    return;
+  }
+
+  if (window.localPdfFile) {
+    const blobUrl = URL.createObjectURL(window.localPdfFile);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = window.localPdfFile.name || filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { a.remove(); URL.revokeObjectURL(blobUrl); }, 1000);
+    return;
+  }
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const fileUrl = urlParams.get("file");
+  if (fileUrl) {
+    if (fileUrl.startsWith("http://localpdf/")) {
+      const localName = decodeURIComponent(fileUrl.substring(16));
+      try {
+        const file = await getPaper(localName);
+        if (file) {
+          const blobUrl = URL.createObjectURL(file);
+          const a = document.createElement("a");
+          a.href = blobUrl;
+          a.download = file.name || filename;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => { a.remove(); URL.revokeObjectURL(blobUrl); }, 1000);
+          return;
+        }
+      } catch (err) {}
+    }
+
+    try {
+      const resp = await fetch(fileUrl);
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(blobUrl); }, 1000);
+    } catch (err) {
+      console.error("[ScholarPDF Helper] Fetch download failed:", err);
+    }
+  }
+}
+
+async function triggerPrint(customBuffer = null) {
+  let blobUrl = "";
+  if (customBuffer) {
+    const blob = new Blob([customBuffer], { type: "application/pdf" });
+    blobUrl = URL.createObjectURL(blob);
+  } else if (window.localPdfFile) {
+    blobUrl = URL.createObjectURL(window.localPdfFile);
+  } else {
+    const urlParams = new URLSearchParams(window.location.search);
+    const fileUrl = urlParams.get("file");
+    if (fileUrl) {
+      if (fileUrl.startsWith("http://localpdf/")) {
+        const localName = decodeURIComponent(fileUrl.substring(16));
+        try {
+          const file = await getPaper(localName);
+          if (file) {
+            blobUrl = URL.createObjectURL(file);
+          }
+        } catch (e) {}
+      } else {
+        try {
+          const resp = await fetch(fileUrl);
+          const blob = await resp.blob();
+          blobUrl = URL.createObjectURL(blob);
+        } catch (err) {
+          console.error("[ScholarPDF Helper] Failed to fetch PDF for printing:", err);
+        }
+      }
+    }
+  }
+
+  if (blobUrl) {
+    const printIframe = document.createElement("iframe");
+    printIframe.style.position = "fixed";
+    printIframe.style.top = "-9999px";
+    printIframe.style.left = "-9999px";
+    printIframe.style.width = "1px";
+    printIframe.style.height = "1px";
+    printIframe.src = blobUrl;
+    printIframe.onload = () => {
+      setTimeout(() => {
+        try {
+          printIframe.contentWindow.focus();
+          printIframe.contentWindow.print();
+        } catch (err) {
+          console.error("[ScholarPDF Helper] Iframe print failed, falling back to window.print():", err);
+          window.print();
+        }
+      }, 300);
+      setTimeout(() => {
+        printIframe.remove();
+        URL.revokeObjectURL(blobUrl);
+      }, 120000);
+    };
+    document.body.appendChild(printIframe);
+  } else {
+    window.print();
+  }
+}
 
 // IndexedDB helper functions for library management
 const DB_NAME = "ScholarPDFLibrary";
@@ -646,4 +805,39 @@ document.addEventListener("click", (e) => {
     }
   }
 }, true);
+
+// Intercept clicks on the Download button
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".gsr-flat-btn");
+  if (btn) {
+    const svg = btn.querySelector("svg");
+    if (svg) {
+      const path = svg.querySelector("path");
+      if (path && path.getAttribute("d") && path.getAttribute("d").includes("M14.8 10.3L13.6 9")) {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log("[ScholarPDF Helper] Download button clicked via direct interceptor");
+        await triggerDownload();
+      }
+    }
+  }
+}, true);
+
+// Intercept clicks on the Print button
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".gsr-flat-btn");
+  if (btn) {
+    const svg = btn.querySelector("svg");
+    if (svg) {
+      const path = svg.querySelector("path");
+      if (path && path.getAttribute("d") && path.getAttribute("d").includes("M14 7.5V4.8")) {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log("[ScholarPDF Helper] Print button clicked via direct interceptor");
+        await triggerPrint();
+      }
+    }
+  }
+}, true);
+
 

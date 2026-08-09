@@ -73,6 +73,10 @@ Porting this extension from Chromium to Firefox-based browsers presents unique t
     1.  Strips `allow-same-origin` from `reader-compiled.js` to enforce proper sandbox isolation and comply with browser policies.
     2.  Injects a `<meta charset="utf-8">` tag into `pdf_loader_iframe.html` before packaging. This forces Firefox to parse the loaded PDF.js scripts in UTF-8, resolving font/CMap corruption and restoring a fully functional selectable text layer.
 
+### 7. Download & Print Execution Delegation
+*   **The Problem:** In Chromium, PDF downloads and printing are triggered directly within the sandboxed loader iframe via `<a>.click()` and window postMessages. In Firefox, unique-origin (`null`) sandboxed frames are strictly blocked from triggering `blob:null/...` downloads or initiating top-level print dialogs.
+*   **The Solution:** The patcher delegates download and print tasks to `reader_firefox_helper.js` in the parent window. The helper receives the PDF buffer / URL from the reader context, creates a trusted blob within the privileged `moz-extension://` origin, names the file with the sanitized document title, and triggers native file download or isolated iframe printing.
+
 ---
 
 ## Detailed File Patches
@@ -103,6 +107,7 @@ The `patch.py` utility automatically executes modifications across the following
 *   **[pdf_loader-compiled.js](file:///C:/Users/youse/Development/scholar-pdf-patcher/dist/pdf_loader-compiled.js)**:
     *   [ ] Patches iframe parent `postMessage` targetOrigin resolution.
     *   [ ] Points `GlobalWorkerOptions.workerSrc` directly to `/pdf.worker.min.js`.
+    *   [ ] Patches PDF download handler to delegate download execution to the parent frame.
 *   **[reader-compiled.js](file:///C:/Users/youse/Development/scholar-pdf-patcher/dist/reader-compiled.js)**:
     *   [ ] Strips `allow-same-origin` from the iframe sandbox to satisfy Firefox security policies.
     *   [ ] Guards popover focus event checks to prevent runtime bubble-up crashes.
