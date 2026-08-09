@@ -433,9 +433,15 @@ def patch_manifest(manifest_path: Path):
     # 7. Remove sandboxed pages declaration (sandboxed pages cannot receive message channel fetches easily on Firefox)
     manifest.pop("sandbox", None)
 
-    # 8. Clean up Sandbox CSP
+    # 8. Clean up Sandbox CSP and allow blob: frames for printing
     csp = manifest.get("content_security_policy", {})
     csp.pop("sandbox", None)
+    if "extension_pages" in csp:
+        ext_csp = csp["extension_pages"]
+        if "frame-src" in ext_csp and "blob:" not in ext_csp:
+            ext_csp = ext_csp.replace("frame-src 'self'", "frame-src 'self' blob:")
+            ext_csp = ext_csp.replace("child-src 'self'", "child-src 'self' blob:")
+        csp["extension_pages"] = ext_csp
     manifest["content_security_policy"] = csp
 
     # 9. Modify web accessible resources to expose pdf.js libraries
