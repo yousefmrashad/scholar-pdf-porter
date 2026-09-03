@@ -510,6 +510,10 @@ def patch_reader_html(reader_html_path: Path):
             html
         )
 
+    # 2. Add favicon link tag if not present
+    if '<link rel="icon"' not in html:
+        html = html.replace("<head>", '<head>\n <link rel="icon" type="image/png" href="/icon16.png">')
+
     with open(reader_html_path, "w", encoding="utf-8") as f:
         f.write(html)
     print("[+] reader.html patched successfully!")

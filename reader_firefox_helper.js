@@ -131,6 +131,81 @@
   });
 })();
 
+// Automatically update document.title (tab title) to match the PDF document name / title
+function initTabTitleSync() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const fileUrl = urlParams.get("file");
+
+  if (fileUrl) {
+    // 1. Immediate initial title from local filename or web URL
+    if (fileUrl.startsWith("http://localpdf/")) {
+      document.title = decodeURIComponent(fileUrl.substring(16));
+    } else if (fileUrl.startsWith("http%3A%2F%2Flocalpdf%2F")) {
+      document.title = decodeURIComponent(decodeURIComponent(fileUrl).substring(16));
+    } else {
+      try {
+        const parsed = new URL(fileUrl);
+        const name = decodeURIComponent(parsed.pathname.split("/").pop());
+        if (name) {
+          document.title = name;
+        }
+      } catch (e) {}
+    }
+
+    // 2. Observe the toolbar title element (.gsr-tb-title) for the parsed paper title
+    const observer = new MutationObserver(() => {
+      const titleEl = document.querySelector(".gsr-tb-title");
+      if (titleEl && titleEl.textContent.trim()) {
+        const docTitle = titleEl.textContent.trim();
+        if (docTitle && document.title !== docTitle) {
+          document.title = docTitle;
+        }
+      }
+    });
+
+    const target = document.documentElement || document.body;
+    if (target) {
+      observer.observe(target, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+    } else {
+      document.addEventListener("DOMContentLoaded", () => {
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          characterData: true
+        });
+      });
+    }
+  } else {
+    document.title = "Google Scholar PDF Reader";
+  }
+
+  // Ensure favicon is set to extension icon
+  setFavicon();
+}
+
+function setFavicon() {
+  let link = document.querySelector("link[rel~='icon']");
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "icon";
+    link.type = "image/png";
+    const head = document.head || document.documentElement;
+    if (head) head.appendChild(link);
+  }
+  const iconUrl = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL)
+    ? chrome.runtime.getURL("icon16.png")
+    : "/icon16.png";
+  if (link && link.href !== iconUrl) {
+    link.href = iconUrl;
+  }
+}
+
+initTabTitleSync();
+
 function getDocumentFilename() {
   const titleEl = document.querySelector(".gsr-tb-title");
   let title = titleEl ? titleEl.textContent.trim() : "";
